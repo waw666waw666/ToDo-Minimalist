@@ -579,7 +579,7 @@
     </div>
 
     <!-- Add Task Modal -->
-    <div id="addModal" onclick="if(event.target==this) hideAddModal()">
+    <div id="addModal" onclick="if(event.target==this) requestCloseAddModal()">
         <div class="modal-content">
             <div class="modal-header-line"></div>
             <div class="flex justify-between items-center mb-6">
@@ -609,14 +609,14 @@
             </div>
 
             <div class="flex gap-4 mt-2">
-                <button onclick="hideAddModal()" class="btn-cancel flex-1 p-5 rounded-2xl font-bold active:scale-95 transition-all">取消</button>
+                <button onclick="requestCloseAddModal()" class="btn-cancel flex-1 p-5 rounded-2xl font-bold active:scale-95 transition-all">取消</button>
                 <button onclick="addTask()" id="confirmBtn" class="btn-confirm flex-1 p-5 rounded-2xl font-bold active:scale-95 transition-all">确认</button>
             </div>
         </div>
     </div>
 
     <!-- Delete Confirmation Modal -->
-    <div id="deleteModal" class="delete-modal-overlay" onclick="if(event.target==this) hideDeleteModal()">
+    <div id="deleteModal" class="delete-modal-overlay" onclick="if(event.target==this) requestCloseDeleteModal()">
         <div class="delete-modal-content">
             <div class="delete-icon-wrapper">
                 <i class="fas fa-trash-alt"></i>
@@ -625,13 +625,13 @@
             <p class="text-[#86868B] text-sm mb-8 leading-relaxed">删除后将无法找回该事项，<br>确定要执行此操作吗？</p>
             <div class="flex flex-col gap-3">
                 <button id="confirmDeleteBtn" class="w-full p-4 bg-[#FF4D4F] text-white rounded-2xl font-bold active:scale-95 transition-all">删除</button>
-                <button onclick="hideDeleteModal()" class="w-full p-4 bg-[#F2F2F7] text-[#86868B] rounded-2xl font-bold active:scale-95 transition-all">取消</button>
+                <button onclick="requestCloseDeleteModal()" class="w-full p-4 bg-[#F2F2F7] text-[#86868B] rounded-2xl font-bold active:scale-95 transition-all">取消</button>
             </div>
         </div>
     </div>
 
     <!-- Full Image Viewer -->
-    <div id="imageViewer" class="image-viewer-overlay" onclick="closeImageViewer()">
+    <div id="imageViewer" class="image-viewer-overlay" onclick="requestCloseImageViewer()">
         <div class="close-viewer-btn">
             <i class="fas fa-times"></i>
         </div>
@@ -642,13 +642,19 @@
         // --- 状态记忆与持久化逻辑 ---
         
         // 1. 获取本地存储的任务，如果没有则返回空数组（不再强制显示初始任务）
-        let tasks = JSON.parse(localStorage.getItem('do_tasks')) || [];
+        let tasks = (JSON.parse(localStorage.getItem('do_tasks')) || []).map(t => {
+            if (!t || typeof t !== 'object') return t;
+            const timeEpoch = t.timeEpoch ?? parseTaskTimeToEpoch(t.time);
+            if (timeEpoch == null) return t;
+            return { ...t, timeEpoch };
+        });
 
         // 2. 获取上次退出的板块，默认为 'do'
         let activeTab = localStorage.getItem('do_active_tab') || 'do';
         
         // 3. 排序状态：desc (降序) / asc (升序) / manual (手动)
         let sortOrders = JSON.parse(localStorage.getItem('do_sort_orders')) || { do: 'desc', todo: 'asc' };
+        let overlayStack = [];
 
         function saveState() {
             localStorage.setItem('do_tasks', JSON.stringify(tasks));
@@ -656,12 +662,69 @@
             localStorage.setItem('do_sort_orders', JSON.stringify(sortOrders));
         }
 
+        function pushOverlay(id) {
+            if (overlayStack[overlayStack.length - 1] === id) return;
+            overlayStack.push(id);
+            history.pushState({ overlay: id }, '');
+        }
+
+        function hideAddModalInternal() {
+            document.getElementById('addModal').style.display = 'none';
+            document.body.style.overflow = '';
+            document.getElementById('taskInput').value = '';
+            editingTaskId = null;
+            currentTaskImages = [];
+        }
+
+        function requestCloseAddModal() {
+            if (overlayStack[overlayStack.length - 1] === 'addModal') {
+                history.back();
+                return;
+            }
+            hideAddModalInternal();
+        }
+
+        function hideDeleteModalInternal() {
+            const modal = document.getElementById('deleteModal');
+            modal.classList.remove('active');
+            setTimeout(() => {
+                modal.style.display = 'none';
+                taskToDelete = null;
+                document.body.style.overflow = '';
+            }, 300);
+        }
+
+        function requestCloseDeleteModal() {
+            if (overlayStack[overlayStack.length - 1] === 'deleteModal') {
+                history.back();
+                return;
+            }
+            hideDeleteModalInternal();
+        }
+
+        function closeImageViewerInternal() {
+            const viewer = document.getElementById('imageViewer');
+            viewer.classList.remove('active');
+            setTimeout(() => {
+                viewer.style.display = 'none';
+                document.body.style.overflow = '';
+            }, 300);
+        }
+
+        function requestCloseImageViewer() {
+            if (overlayStack[overlayStack.length - 1] === 'imageViewer') {
+                history.back();
+                return;
+            }
+            closeImageViewerInternal();
+        }
+
         // 获取格式化的日期时间：年/月/日 星期X HH:mm
         function getFormattedTime() {
             const now = new Date();
             const year = now.getFullYear();
-            const month = now.getMonth() + 1;
-            const date = now.getDate();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const date = String(now.getDate()).padStart(2, '0');
             const dayNames = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
             const dayName = dayNames[now.getDay()];
             const hours = String(now.getHours()).padStart(2, '0');
@@ -669,14 +732,52 @@
             return `${year}/${month}/${date} ${dayName} ${hours}:${minutes}`;
         }
 
+        function parseTaskTimeToEpoch(timeStr) {
+            if (!timeStr || typeof timeStr !== 'string') return null;
+            const m = timeStr.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+星期[一二三四五六日])?(?:\s+(\d{1,2}):(\d{2}))?/);
+            if (!m) return null;
+            const year = Number(m[1]);
+            const month = Number(m[2]);
+            const day = Number(m[3]);
+            const hour = m[4] ? Number(m[4]) : 0;
+            const minute = m[5] ? Number(m[5]) : 0;
+            const d = new Date(year, month - 1, day, hour, minute, 0, 0);
+            if (Number.isNaN(d.getTime())) return null;
+            if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+            return d.getTime();
+        }
+
+        function formatEpochToTimeString(epoch) {
+            const d = new Date(epoch);
+            if (Number.isNaN(d.getTime())) return null;
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const date = String(d.getDate()).padStart(2, '0');
+            const dayNames = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+            const dayName = dayNames[d.getDay()];
+            const hours = String(d.getHours()).padStart(2, '0');
+            const minutes = String(d.getMinutes()).padStart(2, '0');
+            return `${year}/${month}/${date} ${dayName} ${hours}:${minutes}`;
+        }
+
+        function normalizeTimeString(timeStr) {
+            const epoch = parseTaskTimeToEpoch(timeStr);
+            if (epoch == null) return { epoch: null, normalized: timeStr };
+            const normalized = formatEpochToTimeString(epoch);
+            return { epoch, normalized: normalized || timeStr };
+        }
+
         // 自动根据输入的日期更新星期几
         function autoUpdateWeekday(el) {
             const val = el.value;
             // 匹配 YYYY/M/D 或 YYYY/MM/DD
-            const dateMatch = val.match(/^(\d{4}\/\d{1,2}\/\d{1,2})/);
+            const dateMatch = val.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
             if (dateMatch) {
-                const dateStr = dateMatch[1];
-                const d = new Date(dateStr);
+                const dateStr = `${dateMatch[1]}/${dateMatch[2]}/${dateMatch[3]}`;
+                const year = Number(dateMatch[1]);
+                const month = Number(dateMatch[2]);
+                const day = Number(dateMatch[3]);
+                const d = new Date(year, month - 1, day);
                 if (!isNaN(d.getTime())) {
                     const dayNames = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
                     const newDay = dayNames[d.getDay()];
@@ -742,11 +843,12 @@
         // 排序函数：基于时间字符串
         function sortTasks(taskList, order) {
             return taskList.sort((a, b) => {
-                if (!a.time || !b.time) return 0;
-                // 使用 localeCompare 进行字符串比较，确保格式如 YYYY/MM/DD 的正确性
-                return order === 'desc' 
-                    ? b.time.localeCompare(a.time) 
-                    : a.time.localeCompare(b.time);
+                const aEpoch = (a && typeof a === 'object' && a.timeEpoch != null) ? a.timeEpoch : parseTaskTimeToEpoch(a?.time);
+                const bEpoch = (b && typeof b === 'object' && b.timeEpoch != null) ? b.timeEpoch : parseTaskTimeToEpoch(b?.time);
+                if (aEpoch == null && bEpoch == null) return 0;
+                if (aEpoch == null) return 1;
+                if (bEpoch == null) return -1;
+                return order === 'desc' ? (bEpoch - aEpoch) : (aEpoch - bEpoch);
             });
         }
 
@@ -1040,6 +1142,7 @@
             renderImagePreviews();
 
             document.getElementById('addModal').style.display = 'flex';
+            pushOverlay('addModal');
             
             const confirmBtn = document.getElementById('confirmBtn');
             confirmBtn.style.backgroundColor = target === 'do' ? 'var(--coloros-success)' : 'var(--coloros-primary)';
@@ -1071,6 +1174,7 @@
             renderImagePreviews();
 
             document.getElementById('addModal').style.display = 'flex';
+            pushOverlay('addModal');
             
             const confirmBtn = document.getElementById('confirmBtn');
             confirmBtn.style.backgroundColor = task.category === 'do' ? 'var(--coloros-success)' : 'var(--coloros-primary)';
@@ -1090,26 +1194,22 @@
             document.body.style.overflow = 'hidden';
         }
 
-        function hideAddModal() {
-            document.getElementById('addModal').style.display = 'none';
-            document.body.style.overflow = '';
-            document.getElementById('taskInput').value = '';
-            editingTaskId = null;
-            currentTaskImages = [];
-        }
+        function hideAddModal() { requestCloseAddModal(); }
 
         function addTask() {
             const input = document.getElementById('taskInput');
             const timeInput = document.getElementById('taskTimeInput');
             const text = input.value.trim();
             const customTime = timeInput.value.trim() || getFormattedTime();
+            const { epoch, normalized } = normalizeTimeString(customTime);
             
             if (text) {
                 if (editingTaskId) {
                     const task = tasks.find(t => t.id === editingTaskId);
                     if (task) {
                         task.text = text;
-                        task.time = customTime;
+                        task.time = normalized;
+                        task.timeEpoch = epoch;
                         task.images = [...currentTaskImages]; // 保存修改后的图片数组
                         delete task.image; // 删除旧的单图字段
                     }
@@ -1118,13 +1218,14 @@
                         id: Date.now(),
                         text: text,
                         completed: currentModalTarget === 'do',
-                        time: customTime,
+                        time: normalized,
+                        timeEpoch: epoch,
                         category: currentModalTarget,
                         images: [...currentTaskImages] // 保存图片数组
                     });
                 }
                 input.value = '';
-                hideAddModal();
+                requestCloseAddModal();
                 saveState();
                 renderTasks();
             }
@@ -1143,6 +1244,7 @@
                 task.completed = !task.completed;
                 if (task.completed) {
                     task.time = getFormattedTime();
+                    task.timeEpoch = parseTaskTimeToEpoch(task.time);
                 }
             }
             saveState();
@@ -1154,6 +1256,7 @@
             taskToDelete = id;
             const modal = document.getElementById('deleteModal');
             modal.style.display = 'flex';
+            pushOverlay('deleteModal');
             setTimeout(() => modal.classList.add('active'), 10);
             document.body.style.overflow = 'hidden';
 
@@ -1162,20 +1265,12 @@
                     tasks = tasks.filter(t => t.id !== taskToDelete);
                     saveState();
                     renderTasks();
-                    hideDeleteModal();
+                    requestCloseDeleteModal();
                 }
             };
         }
 
-        function hideDeleteModal() {
-            const modal = document.getElementById('deleteModal');
-            modal.classList.remove('active');
-            setTimeout(() => {
-                modal.style.display = 'none';
-                taskToDelete = null;
-                document.body.style.overflow = '';
-            }, 300);
-        }
+        function hideDeleteModal() { requestCloseDeleteModal(); }
 
         // 全屏图片查看器逻辑
         function openImageViewer(src) {
@@ -1183,18 +1278,20 @@
             const fullImg = document.getElementById('fullImage');
             fullImg.src = src;
             viewer.style.display = 'flex';
+            pushOverlay('imageViewer');
             setTimeout(() => viewer.classList.add('active'), 10);
             document.body.style.overflow = 'hidden'; // 禁止背景滚动
         }
 
-        function closeImageViewer() {
-            const viewer = document.getElementById('imageViewer');
-            viewer.classList.remove('active');
-            setTimeout(() => {
-                viewer.style.display = 'none';
-                document.body.style.overflow = '';
-            }, 300);
-        }
+        function closeImageViewer() { requestCloseImageViewer(); }
+
+        window.addEventListener('popstate', () => {
+            const id = overlayStack.pop();
+            if (!id) return;
+            if (id === 'imageViewer') closeImageViewerInternal();
+            if (id === 'deleteModal') hideDeleteModalInternal();
+            if (id === 'addModal') hideAddModalInternal();
+        });
 
         // 适配移动端软键盘弹出时的视口变化
         if (window.visualViewport) {
